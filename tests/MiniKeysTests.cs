@@ -1,11 +1,13 @@
 using System;
 using System.Collections;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using Thread = System.Threading.Thread;
 
 internal static class MiniKeysTests
 {
@@ -28,12 +30,13 @@ internal static class MiniKeysTests
             settingsPath = Type("Settings").GetField("FilePath", Members);
             originalSettingsPath = settingsPath.GetValue(null);
             settingsPath.SetValue(null, Path.Combine(Scratch, "settings.json"));
+            Native.SetProcessDPIAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
             ModelTests();
+            ComponentTests();
             if (!args.Contains("--model-only"))
             {
-                Native.SetProcessDPIAware();
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
                 using (var host = new InputHost())
                 {
                     Application.Run(host);
@@ -82,9 +85,13 @@ internal static class MiniKeysTests
         var settings = Activator.CreateInstance(Type("Settings"), true);
         Set(settings, "Keys", "E 3 Backspace"); Set(settings, "Columns", 2);
         Set(settings, "X", 173); Set(settings, "Y", 241); Set(settings, "Width", 347); Set(settings, "Height", 183); Set(settings, "Pinned", false);
+        Set(settings, "FadeEnabled", false);
         Check((bool)Call(Type("Settings"), settings, "Save"), "save to isolated configuration path");
         var loaded = Call(Type("Settings"), null, "Load");
-        Check(new[] { "Keys", "Columns", "X", "Y", "Width", "Height", "Pinned" }.All(n => Object.Equals(Get(settings, n), Get(loaded, n))), "keys, layout, bounds and pin setting persist");
+        Check(new[] { "Keys", "Columns", "X", "Y", "Width", "Height", "Pinned", "FadeEnabled" }.All(n => Object.Equals(Get(settings, n), Get(loaded, n))), "keys, layout, bounds, pin and fade settings persist");
+        File.WriteAllText((string)settingsPath.GetValue(null), "{\"Keys\":\"3 E D C\",\"Columns\":1,\"X\":173,\"Y\":241,\"Width\":196,\"Height\":158,\"Pinned\":true}");
+        loaded = Call(Type("Settings"), null, "Load");
+        Check((bool)Get(loaded, "FadeEnabled") && (int)Get(loaded, "Columns") == 1, "v1 configuration enables the new fade default without changing layout");
         File.WriteAllText((string)settingsPath.GetValue(null), "{invalid json");
         loaded = Call(Type("Settings"), null, "Load");
         Check((string)Get(loaded, "Keys") == "3 E D C" && (int)Get(loaded, "Columns") == 4, "corrupt configuration restores defaults");
@@ -92,6 +99,142 @@ internal static class MiniKeysTests
         loaded = Call(Type("Settings"), null, "Load");
         Check((string)Get(loaded, "Keys") == "3 E D C", "null configuration restores defaults");
         File.Delete((string)settingsPath.GetValue(null));
+    }
+
+    private static Control[] KeyTiles(Form keyboard)
+    {
+        return ((IEnumerable)Get(keyboard, "keys")).Cast<Control>().ToArray();
+    }
+
+    private static void CheckLayout(Form keyboard, string description)
+    {
+        keyboard.PerformLayout();
+        var tiles = keyboard.Controls.Cast<Control>().ToArray();
+        bool contained = tiles.All(c => keyboard.ClientRectangle.Contains(c.Bounds) && c.Width > 0 && c.Height > 0);
+        bool separate = !tiles.Where((a, i) => tiles.Skip(i + 1).Any(b => a.Bounds.IntersectsWith(b.Bounds))).Any();
+        Check(contained && separate && KeyTiles(keyboard).All(c => c.Width >= 24 && c.Height >= 24), description + " keeps every tool and key inside the window, separate and usable (" + keyboard.Width + "x" + keyboard.Height + ")");
+    }
+
+    private static void Preview(Form keyboard, string filename)
+    {
+        string directory = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "docs", "images"));
+        Directory.CreateDirectory(directory);
+        using (var bitmap = new Bitmap(keyboard.Width, keyboard.Height))
+        {
+            keyboard.DrawToBitmap(bitmap, keyboard.ClientRectangle);
+            // A hidden form omits children from its WM_PRINT pass. Render each
+            // actual control into the same layout without displaying the form.
+            using (var graphics = Graphics.FromImage(bitmap))
+            foreach (Control control in keyboard.Controls)
+            using (var tile = new Bitmap(control.Width, control.Height))
+            {
+                control.DrawToBitmap(tile, control.ClientRectangle);
+                graphics.DrawImageUnscaled(tile, control.Location);
+            }
+            bitmap.Save(Path.Combine(directory, filename));
+        }
+    }
+
+    private static void ComponentTests()
+    {
+        CultureInfo originalCulture = Thread.CurrentThread.CurrentUICulture;
+        try
+        {
+            Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
+            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "English", "non-Chinese UI culture uses English");
+            Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
+            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "中文", "Chinese UI culture uses Chinese");
+            using (var keyboard = (Form)Activator.CreateInstance(Type("KeyboardWindow"), true))
+            {
+                // Creating handles and bitmaps does not show or activate this window.
+                IntPtr handle = keyboard.Handle;
+                var tools = new[] { "pin", "configure", "minimize", "close" }.Select(n => (Control)Get(keyboard, n)).ToArray();
+                Check(tools.Select(c => (string)Get(c, "Icon")).SequenceEqual(new[] { "pin", "settings", "minimize", "close" }), "toolbar exposes four stable icon controls");
+                Check(tools.All(c => !String.IsNullOrEmpty(c.AccessibleName) && !c.TabStop), "icon controls have accessible labels and do not take keyboard focus");
+                Check((Native.GetWindowLong(handle, -20) & 0x08000000) != 0 && keyboard.ShowInTaskbar, "hidden window retains no-activate behavior and a taskbar entry");
+                CheckLayout(keyboard, "default horizontal layout");
+                Preview(keyboard, "v1.1.0.png");
+
+                object settings = Get(keyboard, "settings");
+                Set(settings, "Columns", 1);
+                Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
+                foreach (int width in new[] { 40, 55, 56, 77, 78, 99, 100, 196, 284 })
+                {
+                    keyboard.Width = width;
+                    keyboard.Height = keyboard.MinimumSize.Height;
+                    CheckLayout(keyboard, "vertical layout at requested width " + width);
+                }
+                keyboard.Width = keyboard.MinimumSize.Width;
+                keyboard.Height = keyboard.MinimumSize.Height;
+                Check(keyboard.Width <= 44, "four-key vertical layout can be narrowed to at most 44 pixels");
+                Preview(keyboard, "v1.1.0-vertical.png");
+
+                Set(settings, "Columns", 4);
+                Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
+                Check(tools.Select(c => c.Top).Distinct().Count() == 1, "switching a 40px vertical layout to four columns immediately places all toolbar icons in one row");
+                keyboard.Height = keyboard.MinimumSize.Height;
+                CheckLayout(keyboard, "vertical-to-horizontal minimum layout");
+
+                Set(settings, "Keys", String.Join(" ", Enumerable.Repeat("E", 24)));
+                Set(settings, "Columns", 12);
+                Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
+                keyboard.Size = keyboard.MinimumSize;
+                CheckLayout(keyboard, "24-key, 12-column minimum layout");
+                Set(settings, "Keys", "3 E D C");
+                Set(settings, "Columns", 4);
+                Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
+                keyboard.Width = 284; keyboard.Height = 104;
+
+                // Move this hidden test form away from the cursor, without moving the cursor.
+                keyboard.Location = new Point(-16000, -16000);
+                DateTime now = DateTime.UtcNow;
+                Set(settings, "FadeEnabled", true);
+                Set(keyboard, "lastActivity", now);
+                Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(3.9));
+                Check(keyboard.Opacity == 1, "fade waits for four seconds of inactivity");
+                Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4));
+                Check(keyboard.Opacity > 0.65 && keyboard.Opacity < 1, "fade begins gradually instead of jumping to the target");
+                for (int i = 1; i <= 20; i++) Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4 + i * 0.05));
+                Check(Math.Abs(keyboard.Opacity - 0.65) < 0.005, "fade stops at a visible 65 percent opacity");
+                Call(Type("KeyboardWindow"), keyboard, "TouchActivity");
+                Check(keyboard.Opacity == 1, "activity immediately restores full opacity");
+                keyboard.Location = new Point(Cursor.Position.X - 10, Cursor.Position.Y - 10);
+                keyboard.Opacity = 0.65; Set(keyboard, "lastActivity", now.AddMinutes(-1));
+                Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now);
+                Check(keyboard.Opacity == 1, "cursor presence over any part of the window restores full opacity");
+                keyboard.Location = new Point(-16000, -16000);
+                foreach (string state in new[] { "interacting", "dialogOpen" })
+                {
+                    keyboard.Opacity = 0.65; Set(keyboard, "lastActivity", now.AddMinutes(-1)); Set(keyboard, state, true);
+                    Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now);
+                    Check(keyboard.Opacity == 1, state + " suspends fading and restores opacity");
+                    Set(keyboard, state, false);
+                }
+                Set(settings, "FadeEnabled", false); keyboard.Opacity = 0.65;
+                Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now);
+                Check(keyboard.Opacity == 1, "disabling fade restores and retains full opacity");
+
+                Rectangle normalBounds = new Rectangle(173, 241, keyboard.Width, keyboard.Height);
+                keyboard.Bounds = normalBounds;
+                Call(Type("KeyboardWindow"), keyboard, "Save");
+                keyboard.WindowState = FormWindowState.Minimized;
+                Check(keyboard.WindowState == FormWindowState.Minimized, "hidden component accepts minimized state");
+                keyboard.Opacity = 0.65;
+                Call(Type("KeyboardWindow"), keyboard, "UpdateFade", DateTime.UtcNow);
+                Check(keyboard.Opacity == 1, "minimized state suspends fading");
+                Rectangle restore = keyboard.RestoreBounds;
+                Check(restore == normalBounds, "minimized component retains normal restore bounds");
+                Check((bool)Call(Type("KeyboardWindow"), keyboard, "Save"), "settings save succeeds while minimized");
+                object saved = Call(Type("Settings"), null, "Load");
+                Check((int)Get(saved, "X") == restore.X && (int)Get(saved, "Y") == restore.Y && (int)Get(saved, "Width") == restore.Width && (int)Get(saved, "Height") == restore.Height, "minimized save persists normal restore position and size");
+                keyboard.WindowState = FormWindowState.Normal;
+                Check(keyboard.Bounds == normalBounds, "component restores its original position and size");
+                Check(!keyboard.Visible, "component checks never display their window");
+                keyboard.Close();
+            }
+            File.Delete((string)settingsPath.GetValue(null));
+        }
+        finally { Thread.CurrentThread.CurrentUICulture = originalCulture; }
     }
 
     private sealed class InputHost : Form
@@ -204,16 +347,38 @@ internal static class MiniKeysTests
                     var saved = Call(Type("Settings"), null, "Load");
                     Check((int)Get(saved, "X") == keyboard.Left && (int)Get(saved, "Y") == keyboard.Top && (int)Get(saved, "Width") == keyboard.Width && (int)Get(saved, "Height") == keyboard.Height, "moving and resizing are saved after debounce");
                 }
-                else if (step == 22) Native.Click(keyboard.Controls.Cast<Control>().Single(c => c.Text == "已置顶"));
+                else if (step == 22) Native.Click((Control)Get(keyboard, "pin"));
                 else if (step == 23)
                 {
                     var saved = Call(Type("Settings"), null, "Load");
                     Check(!keyboard.TopMost && !(bool)Get(saved, "Pinned"), "pin toggle removes topmost state and persists it");
-                    Native.Click(keyboard.Controls.Cast<Control>().Single(c => c.Text == "置顶"));
+                    Native.Click((Control)Get(keyboard, "pin"));
                 }
                 else if (step == 24)
                 {
                     Check(keyboard.TopMost, "pin toggle restores topmost state");
+                    beforeDrag = keyboard.Bounds;
+                    Native.Click((Control)Get(keyboard, "minimize"));
+                }
+                else if (step == 25)
+                {
+                    Check(keyboard.WindowState == FormWindowState.Minimized, "minimize icon minimizes the displayed keyboard");
+                    Check((bool)Call(Type("KeyboardWindow"), keyboard, "Save"), "displayed minimized keyboard saves successfully");
+                    var saved = Call(Type("Settings"), null, "Load");
+                    Check((int)Get(saved, "X") == beforeDrag.X && (int)Get(saved, "Y") == beforeDrag.Y && (int)Get(saved, "Width") == beforeDrag.Width && (int)Get(saved, "Height") == beforeDrag.Height, "native minimized coordinates do not replace normal saved bounds");
+                    keyboard.WindowState = FormWindowState.Normal;
+                }
+                else if (step == 26)
+                {
+                    Check(keyboard.Bounds == beforeDrag, "displayed keyboard restores the original bounds");
+                    Check(Native.GetForegroundWindow() == Handle && editor.Focused, "programmatic restore preserves target focus");
+                    editor.Clear();
+                    Native.Click(keyTiles[0]);
+                }
+                else if (step == 27) SendKey("Enter");
+                else if (step == 28)
+                {
+                    Check(editor.Text.TrimEnd('\r', '\n') == "3", "keyboard sends input after minimizing and restoring");
                     Close();
                 }
                 step++;

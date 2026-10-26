@@ -2,6 +2,18 @@
 
 [中文](CHANGELOG.md) · [Back to the English guide](README.en.md)
 
+## v1.1.0 · 2026-10-27
+
+A smaller, quieter floating keypad with an English interface.
+
+- Replaced the text pin control with a pin icon; blue means always on top is enabled. Settings, minimize, and close also use icons.
+- Toolbar icons wrap in narrow windows. A small drag grip replaces the title text, allowing the four-key vertical layout to shrink to 40 pixels wide.
+- Added idle fading: after the pointer has been outside the window for 4 seconds, smoothly fade over about 0.4 seconds to 65% opacity. Hover or interact to restore 100% immediately. Disable the feature in settings if preferred.
+- Added minimize to the taskbar, preserving the previous window position and size on restore. After restoring, click the target text field before using the keypad.
+- Automatically use Chinese for Chinese Windows display languages, and English for all other languages.
+- Retain v1.0.0 keys, layout, and window settings on upgrade. Idle fading is enabled by default for older configurations.
+- Updated the Chinese and English guides and release history.
+
 ## v1.0.0 · 2026-10-27
 
 First public release: a small floating Windows keypad for replacing a few broken physical keys.
