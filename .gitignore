@@ -1,0 +1,12 @@
+*.exe
+*.zip
+*.tmp
+tests/tmp-*/
+tests/last-run.txt
+tests/preview.png
+dist/
+.vs/
+obj/
+bin/
+/使用说明.md
+/验证记录.md
