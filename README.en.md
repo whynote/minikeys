@@ -1,5 +1,7 @@
 # MiniKeys · 迷你补键盘
 
+<img src="assets/minikeys.svg" width="64" height="64" alt="MiniKeys keyboard icon">
+
 **A small floating keypad for the few keys your physical keyboard can no longer type.**
 
 [中文主页](README.md) · [Download the latest release](https://github.com/whynote/minikeys/releases/latest) · [Release history](CHANGELOG.en.md)
@@ -8,11 +10,13 @@ MiniKeys is a lightweight Windows utility that puts a few customizable keys on s
 
 ![MiniKeys v1.2.0 in its default vertical layout](docs/images/v1.2.0.png)
 
+v1.2.1 keeps this layout and uses a blue-and-white mini-keyboard icon for the executable, window, and system tray.
+
 The defaults are **Chinese interface, WeChat voice input, and a vertical four-key layout**, initially **60 × 244 pixels**. To use English, click the **gear**, select **English** in the language dropdown, and save. The change applies immediately and is remembered. Interface language and voice input method are separate settings.
 
 ## Download and run
 
-1. Open the [latest release](https://github.com/whynote/minikeys/releases/latest), download `MiniKeys-v1.2.0-win-portable.zip`, and extract it.
+1. Open the [latest release](https://github.com/whynote/minikeys/releases/latest), download `MiniKeys-v1.2.1-win-portable.zip`, and extract it.
 2. Run `MiniKeys.exe`. No installation is required. The window stays on top by default.
 3. Click the text field you want to type into, then click a key in MiniKeys.
 
@@ -26,11 +30,13 @@ Designed for **Windows 10 / 11** with the **.NET Framework 4 family** runtime. N
 - Use one executable for both **WeChat voice input** and **Windows voice input**. WeChat is selected by default. The microphone is first in the toolbar, including narrow layouts.
 - Switch between **Chinese and English** in settings, with immediate application after saving.
 - A compact toolbar: microphone, pin, gear, minimize, and close. A blue pin means always on top is enabled.
-- Configure idle fading: after the pointer has been outside for **4 seconds**, fade smoothly to **30% opacity** by default. Set opacity from **20% to 100%**, or turn fading off. Higher values keep the window clearer; hover or interact to restore full opacity immediately.
+- Configure idle fading: after the pointer has been outside for **4 seconds**, fade smoothly to **30% opacity** by default. Set opacity from **1% to 100%**, or turn fading off. Higher values keep the window clearer; hover or interact to restore full opacity immediately.
 - Click keys while preserving the target application's input focus.
 - Start with a narrow vertical layout. Toolbar icons wrap as the window gets narrower; keys resize with the window.
 - Drag the small grip at the top to move the window; drag an edge or corner to resize it.
-- Minimize to the taskbar and restore the previous position and size.
+- Keep the keypad out of Alt+Tab and the taskbar, with a system-tray entry for finding it again.
+- Minimize to the system tray and click the keyboard icon to restore the previous position and size.
+- Use a dedicated blue-and-white mini-keyboard icon, embedded in the executable, window, and tray. No separate icon file is needed when running the portable app.
 - Remember keys, layout, position, size, pinning, language, voice method, and fade settings.
 
 ## Settings
@@ -72,13 +78,13 @@ The user verified the previous local WeChat behavior. Voice input and recording 
 | Move | Drag the small grip at the top |
 | Resize | Drag an edge or the bottom-right corner |
 | Toggle always on top | Click the pin; blue means pinned |
-| Minimize | Click the short horizontal line |
-| Restore or find the window | Click the taskbar icon |
+| Minimize | Click the short horizontal line to hide the keypad in the system tray |
+| Restore or find the window | Click the tray keyboard icon, or right-click it and choose **Show keyboard**; check the hidden-icons area if needed |
 | Change language, voice method, or fading | Click the gear |
-| Exit | Click the cross |
+| Exit | Click the cross, or choose **Exit** from the tray menu |
 | Reset everything | Close MiniKeys, delete `%LOCALAPPDATA%\MiniKeys\settings.json`, and launch it again |
 
-After restoring from the taskbar, click the target text field before clicking a MiniKeys button. If keys do not reach an application, click its text field first. If the application runs as administrator, run MiniKeys with the same privileges.
+After restoring from the tray, click the target text field before clicking a MiniKeys button. If keys do not reach an application, click its text field first. If the application runs as administrator, run MiniKeys with the same privileges.
 
 To upgrade, close the old application and run the new version. Saved keys, window settings, voice method, and fading preferences are retained. Defaults apply on first launch or when a setting is missing; they do not replace saved choices. [Earlier releases](https://github.com/whynote/minikeys/releases) remain available.
 
@@ -92,8 +98,10 @@ Open PowerShell in the project directory and run:
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Build without arguments to create the unified `MiniKeys.exe`; choose the voice input method in application settings. Source: [src/MiniKeys.cs](src/MiniKeys.cs). See the [English test guide](tests/README.en.md) for validation details. The image above is rendered from the application's controls; it is not a desktop screenshot and does not show transparency composition. Full desktop input and focus behavior after a real taskbar restore have not been rerun for this release.
+Build without arguments to create the unified `MiniKeys.exe`; choose the voice input method in application settings. Source: [src/MiniKeys.cs](src/MiniKeys.cs). See the [English test guide](tests/README.en.md) for validation details. The image above is rendered from the application's controls; it is not a desktop screenshot and does not show transparency composition.
 
-This release passes 76 configuration and UI component checks without triggering voice input, covering defaults, migration, language changes, fading parameters, and compact layouts.
+The user confirmed the tray preview works in actual use. This release adds the dedicated app icon without triggering voice tests again. Windows voice input and Windows 11 remain untested.
+
+97 configuration and component checks pass without triggering voice input, including embedded and executable icons, tray cleanup, and the 1%–100% opacity range.
 
 See [CHANGELOG.en.md](CHANGELOG.en.md) for version history. This project uses the [MIT license](LICENSE).

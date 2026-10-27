@@ -7,6 +7,6 @@ $releasePath = Join-Path $PSScriptRoot "dist\v$version"
 New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
 $releaseApp = Join-Path $releasePath 'MiniKeys.exe'
 if ($appPath -ne $releaseApp) { Copy-Item -LiteralPath $appPath -Destination $releaseApp -Force }
-$files = @($releaseApp) + @('README.md', 'README.en.md', 'CHANGELOG.md', 'CHANGELOG.en.md', 'VOICE-INPUT.md', 'LICENSE', 'docs' | ForEach-Object { Join-Path $PSScriptRoot $_ })
+$files = @($releaseApp) + @('README.md', 'README.en.md', 'CHANGELOG.md', 'CHANGELOG.en.md', 'VOICE-INPUT.md', 'LICENSE', 'docs', 'assets' | ForEach-Object { Join-Path $PSScriptRoot $_ })
 Compress-Archive -LiteralPath $files -DestinationPath (Join-Path $releasePath "MiniKeys-v$version-win-portable.zip") -Force
 Get-ChildItem -LiteralPath $releasePath | Select-Object Name, Length

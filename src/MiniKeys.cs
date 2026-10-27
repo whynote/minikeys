@@ -67,7 +67,7 @@ namespace MiniKeys
                     if (settings == null) throw new SerializationException("Empty settings");
                     KeyMap.Parse(settings.Keys);
                     settings.Columns = Math.Max(1, Math.Min(12, settings.Columns));
-                    settings.FadeOpacityPercent = Math.Max(20, Math.Min(100, settings.FadeOpacityPercent));
+                    settings.FadeOpacityPercent = Math.Max(1, Math.Min(100, settings.FadeOpacityPercent));
                     settings.VoiceInput = string.Equals(settings.VoiceInput, "windows", StringComparison.OrdinalIgnoreCase) ? "windows" : "wechat";
                     settings.Language = string.Equals(settings.Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
                     return settings;
@@ -155,6 +155,7 @@ namespace MiniKeys
         [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
         [DllImport("user32.dll")] internal static extern bool ReleaseCapture();
         [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
         internal static bool VoiceKeysHeld { get; private set; }
 
@@ -313,25 +314,44 @@ namespace MiniKeys
         private readonly ToolTip hints = new ToolTip();
         private readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 500 };
         private readonly System.Windows.Forms.Timer fadeTimer = new System.Windows.Forms.Timer { Interval = 50 };
+        private readonly Icon appIcon = LoadAppIcon();
+        private readonly NotifyIcon tray = new NotifyIcon();
+        private readonly ContextMenuStrip trayMenu = new ContextMenuStrip();
+        private readonly ToolStripMenuItem restoreItem = new ToolStripMenuItem();
+        private readonly ToolStripMenuItem exitItem = new ToolStripMenuItem();
         private Tile voice, pin, configure, minimize, close;
         private bool ready;
         private bool layingOut, interacting, dialogOpen;
         private DateTime lastActivity = DateTime.UtcNow;
 
+        private static Icon LoadAppIcon()
+        {
+            using (var stream = typeof(KeyboardWindow).Assembly.GetManifestResourceStream("MiniKeys.AppIcon.ico"))
+            using (var icon = new Icon(stream, SystemInformation.SmallIconSize))
+                return (Icon)icon.Clone();
+        }
+
         internal KeyboardWindow()
         {
             Ui.Language = settings.Language;
             Text = Ui.Text("迷你补键盘", "MiniKeys"); BackColor = Color.FromArgb(245, 247, 251);
-            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = true;
+            Icon = appIcon;
+            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false;
             AutoScaleMode = AutoScaleMode.None; StartPosition = FormStartPosition.Manual;
             DoubleBuffered = true; TopMost = settings.Pinned;
             voice = new Tile("", true, ToggleVoice) { Icon = "microphone", AccessibleName = "Voice input" };
             pin = new Tile("", true, TogglePin) { Icon = "pin", Highlight = settings.Pinned, AccessibleName = "Pin" };
             configure = new Tile("", true, Configure) { Icon = "settings", AccessibleName = "Settings" };
-            minimize = new Tile("", true, delegate { if (StopVoice()) { TouchActivity(); WindowState = FormWindowState.Minimized; } }) { Icon = "minimize", AccessibleName = "Minimize" };
+            minimize = new Tile("", true, MinimizeToTray) { Icon = "minimize", AccessibleName = "Minimize" };
             close = new Tile("", true, Close) { Icon = "close", AccessibleName = "Close" };
             Controls.AddRange(new Control[] { voice, pin, configure, minimize, close });
             foreach (var tool in new[] { voice, pin, configure, minimize, close }) tool.MouseEnter += delegate { TouchActivity(); };
+            trayMenu.Items.AddRange(new ToolStripItem[] { restoreItem, exitItem });
+            restoreItem.Click += delegate { RestoreFromTray(); };
+            exitItem.Click += delegate { Close(); };
+            tray.Icon = appIcon;
+            tray.ContextMenuStrip = trayMenu;
+            tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
             ApplyLanguage();
             RebuildKeys();
             Size = new Size(Math.Max(MinimumSize.Width, Math.Min(1600, settings.Width)), Math.Max(MinimumSize.Height, Math.Min(1000, settings.Height)));
@@ -354,7 +374,16 @@ namespace MiniKeys
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams
         {
-            get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00040000; return p; }
+            get { var p = base.CreateParams; p.ExStyle = (p.ExStyle & ~0x00040000) | 0x08000000 | 0x00000080; return p; }
+        }
+        protected override void OnShown(EventArgs e) { base.OnShown(e); tray.Visible = true; }
+        private void MinimizeToTray() { if (StopVoice()) { TouchActivity(); Save(); Hide(); } }
+        private void RestoreFromTray()
+        {
+            if (!StopVoice()) return;
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            TouchActivity(); Show();
+            Native.SetWindowPos(Handle, TopMost ? (IntPtr)(-1) : IntPtr.Zero, 0, 0, 0, 0, 0x0013);
         }
         protected override void WndProc(ref Message m)
         {
@@ -432,8 +461,11 @@ namespace MiniKeys
             Text = Ui.Text("迷你补键盘", "MiniKeys");
             UpdateVoiceHint(); UpdatePinHint();
             hints.SetToolTip(configure, Ui.Text("自定义按键和排列", "Customize keys and layout"));
-            hints.SetToolTip(minimize, Ui.Text("最小化到任务栏", "Minimize to taskbar"));
+            hints.SetToolTip(minimize, Ui.Text("收起到右下角托盘", "Minimize to system tray"));
             hints.SetToolTip(close, Ui.Text("退出迷你补键盘", "Exit MiniKeys"));
+            tray.Text = Text;
+            restoreItem.Text = Ui.Text("显示键盘", "Show keyboard");
+            exitItem.Text = Ui.Text("退出", "Exit");
         }
         private void TogglePin() { if (!StopVoice()) return; TouchActivity(); settings.Pinned = TopMost = !TopMost; pin.Highlight = TopMost; pin.Invalidate(); UpdatePinHint(); Save(); }
         private void UpdateVoiceHint()
@@ -473,8 +505,10 @@ namespace MiniKeys
             TouchActivity(); dialogOpen = true;
             try
             {
+            using (var dialogIcon = (Icon)appIcon.Clone())
             using (var dialog = new SettingsDialog(settings))
             {
+                dialog.Icon = dialogIcon;
                 dialog.TopMost = true;
                 if (dialog.ShowDialog() != DialogResult.OK) return;
                 settings.Keys = dialog.KeyText; settings.Columns = dialog.Columns; settings.FadeEnabled = dialog.FadeEnabled;
@@ -494,13 +528,23 @@ namespace MiniKeys
             return settings.Save();
         }
         protected override void OnLocationChanged(EventArgs e) { base.OnLocationChanged(e); ScheduleSave(); }
-        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); if (ready && WindowState == FormWindowState.Minimized) StopVoice(); ScheduleSave(); }
+        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); if (ready && WindowState == FormWindowState.Minimized) { StopVoice(); Hide(); } ScheduleSave(); }
         private void ScheduleSave() { if (ready) { saveTimer.Stop(); saveTimer.Start(); } }
         protected override void OnResizeBegin(EventArgs e) { StopVoice(); interacting = true; TouchActivity(); base.OnResizeBegin(e); }
         protected override void OnResizeEnd(EventArgs e) { interacting = false; TouchActivity(); base.OnResizeEnd(e); }
         protected override void OnFormClosing(FormClosingEventArgs e) { if (!StopVoice()) e.Cancel = true; base.OnFormClosing(e); }
         protected override void OnHandleDestroyed(EventArgs e) { Native.ReleaseVoiceKeys(); base.OnHandleDestroyed(e); }
         protected override void OnFormClosed(FormClosedEventArgs e) { Save(); saveTimer.Dispose(); fadeTimer.Dispose(); hints.Dispose(); base.OnFormClosed(e); }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (tray != null) { tray.Visible = false; tray.Dispose(); }
+                if (trayMenu != null) trayMenu.Dispose();
+            }
+            base.Dispose(disposing);
+            if (disposing && appIcon != null) appIcon.Dispose();
+        }
     }
 
     internal sealed class SettingsDialog : Form
@@ -508,7 +552,7 @@ namespace MiniKeys
         private readonly TextBox keyText = new TextBox();
         private readonly NumericUpDown columns = new NumericUpDown { Minimum = 1, Maximum = 12 };
         private readonly CheckBox fade = new CheckBox { AutoSize = true };
-        private readonly NumericUpDown fadeOpacity = new NumericUpDown { Minimum = 20, Maximum = 100 };
+        private readonly NumericUpDown fadeOpacity = new NumericUpDown { Minimum = 1, Maximum = 100 };
         private readonly ComboBox voiceInput = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         private readonly ComboBox language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         internal string KeyText { get { return keyText.Text.Trim(); } }
@@ -535,7 +579,7 @@ namespace MiniKeys
             language.Items.AddRange(new object[] { "简体中文 / Chinese", "English" }); language.SelectedIndex = settings.Language == "en" ? 1 : 0; language.SetBounds(112, 240, 296, 28); Controls.Add(language);
             fade.Text = Ui.Text("闲置 4 秒后淡化，鼠标回来恢复", "Fade after 4s away; restore on hover"); fade.Checked = settings.FadeEnabled; fade.Location = new Point(20, 286); Controls.Add(fade);
             Controls.Add(new Label { Text = Ui.Text("淡化后不透明度", "Idle opacity"), AutoSize = true, Location = new Point(18, 326) });
-            fadeOpacity.Value = Math.Max(20, Math.Min(100, settings.FadeOpacityPercent)); fadeOpacity.Enabled = fade.Checked; fadeOpacity.SetBounds(152, 322, 70, 26); Controls.Add(fadeOpacity);
+            fadeOpacity.Value = Math.Max(1, Math.Min(100, settings.FadeOpacityPercent)); fadeOpacity.Enabled = fade.Checked; fadeOpacity.SetBounds(152, 322, 70, 26); Controls.Add(fadeOpacity);
             Controls.Add(new Label { Text = Ui.Text("%（数值越大越清楚）", "% (higher = clearer)"), AutoSize = true, Location = new Point(234, 326) });
             fade.CheckedChanged += delegate { fadeOpacity.Enabled = fade.Checked; };
             var reset = new Button { Text = Ui.Text("恢复 3 E D C", "Reset 3 E D C"), Location = new Point(20, 372), Size = new Size(116, 30) };

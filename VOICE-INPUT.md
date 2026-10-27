@@ -6,6 +6,8 @@
 
 麦克风位于工具栏最左侧；窗口缩窄时，工具图标按顺序折行，麦克风始终在第一位。旧浮窗仍在运行时，请先退出旧窗口再打开新版。
 
+从 v1.2.1 起，浮窗不显示在 Alt+Tab 或任务栏中。点击短横线收进系统托盘；点击右下角的蓝底白色键盘图标，或右键选择“显示键盘”恢复。图标可能位于隐藏图标区域。叉号或托盘菜单“退出”会关闭程序。从托盘恢复后，先点击目标输入框，再使用语音按钮。
+
 ## 微信语音输入（默认）
 
 打开并登录支持语音输入的电脑版微信，保持微信的默认 **Ctrl + Win** 语音快捷键，点击想输入文字的位置，然后：
@@ -20,6 +22,8 @@
 
 此前的本地微信语音行为已由用户亲测可用。本次发布未重新触发语音或录音。
 
+用户也已实际试用并确认托盘版本可用；本次更新只统一应用、窗口和托盘图标，语音快捷键逻辑保持不变。
+
 ## Windows 微软语音输入
 
 在同一个程序的设置中选择“Windows 微软语音输入”。先点击目标输入框，再点击麦克风。每次点击都完整发送一次 **Win + H**，包含按下和释放，不会持续按住修饰键。Windows 自己管理监听和停止状态；按钮不模拟“正在录音”的指示。
@@ -31,7 +35,7 @@
 - 默认中文界面，可在设置中切换 English；保存后立即生效并记住选择。界面语言不决定语音方式或识别语言，识别语言由微信或 Windows 管理。
 - 默认四键竖排（一列），初始尺寸 60 × 244 像素；可拖动移动或缩放。
 - 闲置淡化默认开启：鼠标离开 4 秒后开始淡化，回来或交互时恢复清晰。
-- “淡化后不透明度”可设为 **20%–100%**，默认 **30% 不透明度**。数值越大越清楚，100% 表示始终清晰。
+- “淡化后不透明度”可设为 **1%–100%**，默认 **30% 不透明度**。数值越大越清楚，100% 表示始终清晰。
 - 已保存的配置继续沿用；上述默认值用于首次运行或缺少对应配置的情况。
 
 ## 构建与验证
@@ -50,6 +54,8 @@ Starting with v1.2.0, there is a single `MiniKeys.exe`. Click the **gear**, sele
 
 The microphone is the leftmost toolbar control. In narrow layouts, it remains first as icons wrap. Close the old floating window before launching the updated executable.
 
+From v1.2.1, the keypad is excluded from Alt+Tab and the taskbar. Click the short horizontal line to minimize to the system tray. Restore it by clicking the blue-and-white keyboard icon or choosing **Show keyboard** from its right-click menu; check the hidden-icons area if needed. The cross or tray-menu **Exit** closes the application. After restoring, focus the target text field before using the voice button.
+
 ### WeChat voice input (default)
 
 Open and log in to a compatible desktop WeChat version, using its default **Ctrl + Win** voice shortcut. Focus the target text field, then:
@@ -64,6 +70,8 @@ Fading is suspended while the shortcut is held. Keys are released before other k
 
 The user verified the previous local WeChat behavior. Voice input and recording were not triggered again for this release.
 
+The user also confirmed the tray version works in actual use. This update unifies the executable, window, and tray icons while retaining the voice shortcut logic.
+
 ### Windows voice input
 
 Select **Windows voice input** in settings, focus the target text field, and click the microphone. Each click sends a complete **Win + H** shortcut, including press and release events. Modifiers are not held between clicks. Windows manages listening state; MiniKeys does not infer or display a recording state.
@@ -75,7 +83,7 @@ See [Microsoft's guide](https://support.microsoft.com/en-us/accessibility/window
 - The interface defaults to Chinese. Select **English** and save to apply immediately and remember the choice. Interface language does not determine the voice method or recognition language; WeChat or Windows manages recognition language.
 - The default layout is four keys in one column, initially **60 × 244 pixels**. Drag to move or resize it.
 - Idle fading is enabled by default. It starts after the pointer has been outside for **4 seconds**; hovering or interacting restores full opacity.
-- Set **idle opacity** from **20% to 100%**, default **30% opacity**. A higher value keeps the window clearer; 100% keeps it fully opaque.
+- Set **idle opacity** from **1% to 100%**, default **30% opacity**. A higher value keeps the window clearer; 100% keeps it fully opaque.
 - Existing saved preferences are retained. Defaults apply on first launch or when the relevant setting is missing.
 
 ### Build and validation

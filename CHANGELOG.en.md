@@ -2,6 +2,16 @@
 
 [中文](CHANGELOG.md) · [Back to the English guide](README.en.md)
 
+## v1.2.1 · 2026-10-27
+
+- Hide the floating keypad from Alt+Tab and the taskbar to reduce window-switching clutter.
+- Add a system-tray entry: minimize with the short horizontal line, then left-click the tray icon or choose **Show keyboard** from its menu to restore. Exit with the cross or tray menu.
+- Add an original blue-and-white mini-keyboard icon for the executable, window, and tray. Multiple icon sizes are embedded in the app; no extra dependencies or external icon file are needed at runtime.
+- Extend the idle-opacity range to 1%–100%, keeping the default at 30%.
+- Update the Chinese and English tray instructions while retaining v1.2.0 keys, voice input, language, fading, and layout preferences.
+
+The user confirmed the tray version works in actual use. The icon update did not trigger voice tests again. Windows voice input and Windows 11 remain untested.
+
 ## v1.2.0 · 2026-10-27
 
 One application with selectable voice input, interface language, and fade opacity.

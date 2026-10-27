@@ -33,6 +33,7 @@ internal static class MiniKeysTests
             Native.SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            IconTests(args[0]);
             ModelTests();
             ComponentTests();
             if (!args.Contains("--model-only"))
@@ -71,6 +72,24 @@ internal static class MiniKeysTests
     }
     internal static IList Parse(string text) { return (IList)Call(Type("KeyMap"), null, "Parse", text); }
 
+    private static void IconTests(string executablePath)
+    {
+        using (Stream resource = AppAssembly.GetManifestResourceStream("MiniKeys.AppIcon.ico"))
+        {
+            Check(resource != null, "custom application icon is embedded in the assembly");
+            using (var icon = new Icon(resource))
+                Check(icon.Width > 0 && icon.Height > 0, "embedded icon can be loaded without an external asset file");
+        }
+        using (Icon associated = Icon.ExtractAssociatedIcon(Path.GetFullPath(executablePath)))
+            Check(associated != null && associated.Width > 0, "Windows can extract the executable application icon");
+    }
+
+    private static bool IconDisposed(Icon icon)
+    {
+        try { return icon.Handle == IntPtr.Zero; }
+        catch (ObjectDisposedException) { return true; }
+    }
+
     private static void ModelTests()
     {
         Check(String.Join(" ", Parse("3 E D C").Cast<object>().Select(k => (string)Get(k, "Name"))) == "3 E D C", "default key order");
@@ -104,7 +123,7 @@ internal static class MiniKeysTests
         {
             File.WriteAllText((string)settingsPath.GetValue(null), "{\"Keys\":\"3 E D C\",\"FadeOpacityPercent\":" + opacity + ",\"Language\":\"unknown\",\"VoiceInput\":\"unknown\"}");
             loaded = Call(Type("Settings"), null, "Load");
-            Check((int)Get(loaded, "FadeOpacityPercent") == Math.Max(20, Math.Min(100, opacity)) && (string)Get(loaded, "Language") == "zh" && (string)Get(loaded, "VoiceInput") == "wechat", "invalid language and voice settings fall back while opacity is clamped: " + opacity);
+            Check((int)Get(loaded, "FadeOpacityPercent") == Math.Max(1, Math.Min(100, opacity)) && (string)Get(loaded, "Language") == "zh" && (string)Get(loaded, "VoiceInput") == "wechat", "invalid language and voice settings fall back while opacity is clamped: " + opacity);
         }
         File.WriteAllText((string)settingsPath.GetValue(null), "{invalid json");
         loaded = Call(Type("Settings"), null, "Load");
@@ -118,6 +137,12 @@ internal static class MiniKeysTests
     private static Control[] KeyTiles(Form keyboard)
     {
         return ((IEnumerable)Get(keyboard, "keys")).Cast<Control>().ToArray();
+    }
+
+    private static void CheckToolWindowStyle(Form keyboard, string description)
+    {
+        int style = Native.GetWindowLong(keyboard.Handle, -20);
+        Check((style & 0x08000000) != 0 && (style & 0x00000080) != 0 && (style & 0x00040000) == 0 && !keyboard.ShowInTaskbar, description);
     }
 
     private static void CheckLayout(Form keyboard, string description)
@@ -160,6 +185,9 @@ internal static class MiniKeysTests
             Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
             Type("Ui").GetField("Language", Members).SetValue(null, "en");
             Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "English", "English UI selection is independent of Windows UI culture");
+            bool trayDisposed = false;
+            ContextMenuStrip trayMenuForDisposal = null;
+            Icon appIconForDisposal = null;
             using (var keyboard = (Form)Activator.CreateInstance(Type("KeyboardWindow"), true))
             {
                 // Creating handles and bitmaps does not show or activate this window.
@@ -167,13 +195,22 @@ internal static class MiniKeysTests
                 var tools = new[] { "voice", "pin", "configure", "minimize", "close" }.Select(n => (Control)Get(keyboard, n)).ToArray();
                 Check(tools.Select(c => (string)Get(c, "Icon")).SequenceEqual(new[] { "microphone", "pin", "settings", "minimize", "close" }), "toolbar exposes microphone, pin, settings, minimize and close icons in order");
                 Check(tools.All(c => !String.IsNullOrEmpty(c.AccessibleName) && !c.TabStop), "icon controls have accessible labels and do not take keyboard focus");
-                Check((Native.GetWindowLong(handle, -20) & 0x08000000) != 0 && keyboard.ShowInTaskbar, "hidden window retains no-activate behavior and a taskbar entry");
+                CheckToolWindowStyle(keyboard, "native tool window keeps no-activate behavior without an application taskbar entry");
+                var trayField = Type("KeyboardWindow").GetFields(Members).Single(f => typeof(NotifyIcon).IsAssignableFrom(f.FieldType));
+                var tray = (NotifyIcon)trayField.GetValue(keyboard);
+                trayMenuForDisposal = tray.ContextMenuStrip;
+                tray.Disposed += delegate { trayDisposed = true; };
+                Check(tray.Icon != null && !tray.Visible, "hidden component prepares a tray icon without displaying it");
+                appIconForDisposal = (Icon)Get(keyboard, "appIcon");
+                Check(Object.ReferenceEquals(keyboard.Icon, appIconForDisposal) && Object.ReferenceEquals(tray.Icon, appIconForDisposal) && !Object.ReferenceEquals(appIconForDisposal, SystemIcons.Application), "window and tray share the embedded custom icon instead of the system application icon");
+                Check(trayMenuForDisposal != null && trayMenuForDisposal.Items.OfType<ToolStripMenuItem>().Count() == 2, "tray menu provides restore and exit entries");
                 Check(keyboard.Text == "迷你补键盘", "keyboard loads the default Chinese UI selection");
                 CheckLayout(keyboard, "default vertical layout");
                 Preview(keyboard, "v1.2.0.png");
 
                 object settings = Get(keyboard, "settings");
                 var hints = (ToolTip)Get(keyboard, "hints");
+                string englishTrayMenu = null;
                 foreach (string language in new[] { "en", "zh" })
                 {
                     Set(settings, "Language", language);
@@ -181,6 +218,11 @@ internal static class MiniKeysTests
                     Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
                     Check(keyboard.Text == (language == "en" ? "MiniKeys" : "迷你补键盘") && hints.GetToolTip(tools[2]) == (language == "en" ? "Customize keys and layout" : "自定义按键和排列"), "language changes refresh the caption and settings tooltip immediately: " + language);
                     Check(hints.GetToolTip(tools[0]).StartsWith(language == "en" ? "WeChat:" : "微信语音：") && hints.GetToolTip(KeyTiles(keyboard)[0]).StartsWith(language == "en" ? "Send " : "发送 "), "language changes refresh voice and key tooltips without activating voice: " + language);
+                    var menuEntries = trayMenuForDisposal.Items.OfType<ToolStripMenuItem>().ToArray();
+                    Check(!String.IsNullOrEmpty(tray.Text) && menuEntries.All(item => !String.IsNullOrEmpty(item.Text)), "tray tooltip and menu entries have localized labels: " + language);
+                    string currentTrayMenu = String.Join("|", menuEntries.Select(item => item.Text));
+                    if (language == "en") englishTrayMenu = currentTrayMenu;
+                    else Check(currentTrayMenu != englishTrayMenu, "changing UI language also refreshes the tray menu");
                 }
                 Set(settings, "Columns", 1);
                 Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
@@ -223,7 +265,7 @@ internal static class MiniKeysTests
                 Check(keyboard.Opacity > 0.30 && keyboard.Opacity < 1, "fade begins gradually instead of jumping to the target");
                 for (int i = 1; i <= 20; i++) Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4 + i * 0.05));
                 Check(Math.Abs(keyboard.Opacity - 0.30) < 0.005, "fade stops at the default 30 percent opacity");
-                foreach (int opacity in new[] { 20, 65, 70, 100 })
+                foreach (int opacity in new[] { 1, 20, 65, 70, 100 })
                 {
                     Set(settings, "FadeOpacityPercent", opacity); keyboard.Opacity = 1;
                     Set(keyboard, "lastActivity", now);
@@ -247,9 +289,15 @@ internal static class MiniKeysTests
                 Set(settings, "FadeEnabled", false); keyboard.Opacity = 0.65;
                 Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now);
                 Check(keyboard.Opacity == 1, "disabling fade restores and retains full opacity");
+                CheckToolWindowStyle(keyboard, "opacity updates preserve the tool-window and no-activate styles");
 
                 Rectangle normalBounds = new Rectangle(173, 241, keyboard.Width, keyboard.Height);
                 keyboard.Bounds = normalBounds;
+                Call(Type("KeyboardWindow"), keyboard, "MinimizeToTray");
+                Check(!keyboard.Visible && keyboard.WindowState == FormWindowState.Normal && keyboard.Bounds == normalBounds, "tray minimize hides the component without changing its normal bounds or state");
+                Check(!tray.Visible, "tray minimize does not display a notification icon for an unshown component");
+                object traySaved = Call(Type("Settings"), null, "Load");
+                Check((int)Get(traySaved, "X") == normalBounds.X && (int)Get(traySaved, "Y") == normalBounds.Y && (int)Get(traySaved, "Width") == normalBounds.Width && (int)Get(traySaved, "Height") == normalBounds.Height, "tray minimize saves the normal position and size");
                 Call(Type("KeyboardWindow"), keyboard, "Save");
                 keyboard.WindowState = FormWindowState.Minimized;
                 Check(keyboard.WindowState == FormWindowState.Minimized, "hidden component accepts minimized state");
@@ -265,6 +313,21 @@ internal static class MiniKeysTests
                 Check(keyboard.Bounds == normalBounds, "component restores its original position and size");
                 Check(!keyboard.Visible, "component checks never display their window");
                 keyboard.Close();
+            }
+            Check(trayDisposed && trayMenuForDisposal.IsDisposed, "closing the component disposes its tray icon and menu");
+            Check(IconDisposed(appIconForDisposal), "closing the component releases its owned application icon");
+            using (var directDisposeKeyboard = (Form)Activator.CreateInstance(Type("KeyboardWindow"), true))
+            {
+                var directTrayField = Type("KeyboardWindow").GetFields(Members).Single(f => typeof(NotifyIcon).IsAssignableFrom(f.FieldType));
+                var directTray = (NotifyIcon)directTrayField.GetValue(directDisposeKeyboard);
+                var directMenu = directTray.ContextMenuStrip;
+                var directAppIcon = (Icon)Get(directDisposeKeyboard, "appIcon");
+                bool directTrayDisposed = false;
+                directTray.Disposed += delegate { directTrayDisposed = true; };
+                Check(!directDisposeKeyboard.Visible && !directTray.Visible, "direct-dispose component creates neither a displayed window nor a tray icon");
+                directDisposeKeyboard.Dispose();
+                Check(directDisposeKeyboard.IsDisposed && directTrayDisposed && directMenu.IsDisposed, "direct Dispose releases the tray icon and menu without requiring Close");
+                Check(IconDisposed(directAppIcon), "direct Dispose also releases its owned application icon");
             }
             File.Delete((string)settingsPath.GetValue(null));
             SettingsDialogTests();
@@ -290,6 +353,8 @@ internal static class MiniKeysTests
                 Check((string)Type("SettingsDialog").GetProperty("Language", Members).GetValue(dialog, null) == language, "settings language selector starts from the saved choice: " + language);
                 Check((string)Type("SettingsDialog").GetProperty("VoiceInput", Members).GetValue(dialog, null) == "wechat", "settings default to WeChat voice input: " + language);
                 Check((bool)Type("SettingsDialog").GetProperty("FadeEnabled", Members).GetValue(dialog, null) && (int)Type("SettingsDialog").GetProperty("FadeOpacityPercent", Members).GetValue(dialog, null) == 30, "settings show enabled fading at 30 percent opacity: " + language);
+                var opacityControl = (NumericUpDown)Get(dialog, "fadeOpacity");
+                Check(opacityControl.Minimum == 1 && opacityControl.Maximum == 100, "settings allow the full 1 to 100 percent opacity range: " + language);
                 Check(dialog.Controls.Cast<Control>().All(c => dialog.ClientRectangle.Contains(c.Bounds)), "settings controls fit inside the dialog: " + language);
                 ((ComboBox)Get(dialog, "language")).SelectedIndex = language == "en" ? 0 : 1;
                 Check((string)Type("SettingsDialog").GetProperty("Language", Members).GetValue(dialog, null) == (language == "en" ? "zh" : "en") && (string)Get(settings, "Language") == language && (string)Type("Ui").GetField("Language", Members).GetValue(null) == language, "language dropdown changes are staged until settings are saved: " + language);
@@ -423,15 +488,15 @@ internal static class MiniKeysTests
                 }
                 else if (step == 25)
                 {
-                    Check(keyboard.WindowState == FormWindowState.Minimized, "minimize icon minimizes the displayed keyboard");
+                    Check(!keyboard.Visible && keyboard.WindowState == FormWindowState.Normal, "minimize icon hides the displayed keyboard in the tray");
                     Check((bool)Call(Type("KeyboardWindow"), keyboard, "Save"), "displayed minimized keyboard saves successfully");
                     var saved = Call(Type("Settings"), null, "Load");
                     Check((int)Get(saved, "X") == beforeDrag.X && (int)Get(saved, "Y") == beforeDrag.Y && (int)Get(saved, "Width") == beforeDrag.Width && (int)Get(saved, "Height") == beforeDrag.Height, "native minimized coordinates do not replace normal saved bounds");
-                    keyboard.WindowState = FormWindowState.Normal;
+                    Call(Type("KeyboardWindow"), keyboard, "RestoreFromTray");
                 }
                 else if (step == 26)
                 {
-                    Check(keyboard.Bounds == beforeDrag, "displayed keyboard restores the original bounds");
+                    Check(keyboard.Visible && keyboard.Bounds == beforeDrag, "displayed keyboard restores the original bounds from the tray");
                     Check(Native.GetForegroundWindow() == Handle && editor.Focused, "programmatic restore preserves target focus");
                     editor.Clear();
                     Native.Click(keyTiles[0]);
