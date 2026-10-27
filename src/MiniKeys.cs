@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -14,9 +13,10 @@ namespace MiniKeys
 {
     internal static class Ui
     {
+        internal static string Language = "zh";
         internal static string Text(string chinese, string english)
         {
-            return CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh" ? chinese : english;
+            return Language == "en" ? english : chinese;
         }
     }
 
@@ -32,7 +32,8 @@ namespace MiniKeys
                 Native.SetProcessDPIAware();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new KeyboardWindow());
+                try { Application.Run(new KeyboardWindow()); }
+                finally { Native.ReleaseVoiceKeys(); }
             }
         }
     }
@@ -41,17 +42,20 @@ namespace MiniKeys
     internal sealed class Settings
     {
         [DataMember] public string Keys = "3 E D C";
-        [DataMember] public int Columns = 4;
+        [DataMember] public int Columns = 1;
         [DataMember] public int X = -1;
         [DataMember] public int Y = -1;
-        [DataMember] public int Width = 284;
-        [DataMember] public int Height = 104;
+        [DataMember] public int Width = 60;
+        [DataMember] public int Height = 244;
         [DataMember] public bool Pinned = true;
         [DataMember] public bool FadeEnabled = true;
+        [DataMember] public int FadeOpacityPercent = 30;
+        [DataMember] public string VoiceInput = "wechat";
+        [DataMember] public string Language = "zh";
         internal static string FilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiniKeys", "settings.json");
 
         [OnDeserializing]
-        private void BeforeLoad(StreamingContext context) { FadeEnabled = true; }
+        private void BeforeLoad(StreamingContext context) { FadeEnabled = true; FadeOpacityPercent = 30; VoiceInput = "wechat"; Language = "zh"; }
 
         internal static Settings Load()
         {
@@ -63,6 +67,9 @@ namespace MiniKeys
                     if (settings == null) throw new SerializationException("Empty settings");
                     KeyMap.Parse(settings.Keys);
                     settings.Columns = Math.Max(1, Math.Min(12, settings.Columns));
+                    settings.FadeOpacityPercent = Math.Max(20, Math.Min(100, settings.FadeOpacityPercent));
+                    settings.VoiceInput = string.Equals(settings.VoiceInput, "windows", StringComparison.OrdinalIgnoreCase) ? "windows" : "wechat";
+                    settings.Language = string.Equals(settings.Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
                     return settings;
                 }
             }
@@ -148,6 +155,8 @@ namespace MiniKeys
         [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
         [DllImport("user32.dll")] internal static extern bool ReleaseCapture();
         [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
+        internal static bool VoiceKeysHeld { get; private set; }
 
         [StructLayout(LayoutKind.Sequential)] internal struct INPUT { internal uint type; internal INPUTUNION data; }
         [StructLayout(LayoutKind.Explicit)] internal struct INPUTUNION
@@ -170,6 +179,44 @@ namespace MiniKeys
             events[0].data.keyboard = new KEYBDINPUT { scan = (ushort)scan, flags = flags };
             events[1].data.keyboard = new KEYBDINPUT { scan = (ushort)scan, flags = flags | 0x0002U };
             return SendInput(2, events, Marshal.SizeOf(typeof(INPUT))) == 2;
+        }
+
+        private static INPUT ShortcutKey(ushort key, bool up)
+        {
+            return new INPUT { type = 1, data = new INPUTUNION { keyboard = new KEYBDINPUT { vk = key, flags = (up ? 0x0002U : 0) | (key == 0x5B ? 0x0001U : 0) } } };
+        }
+        internal static bool ModifiersDown()
+        {
+            foreach (int key in new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C })
+                if ((GetAsyncKeyState(key) & 0x8000) != 0) return true;
+            return false;
+        }
+        internal static bool HoldVoiceKeys()
+        {
+            if (VoiceKeysHeld || ModifiersDown()) return false;
+            var inputs = new[] { ShortcutKey(0xA2, false), ShortcutKey(0x5B, false) };
+            // Track ownership before injection so a partial send can still be released.
+            VoiceKeysHeld = true;
+            if (SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT))) == 2) return true;
+            ReleaseVoiceKeys();
+            return false;
+        }
+        internal static bool ReleaseVoiceKeys()
+        {
+            if (!VoiceKeysHeld) return true;
+            var inputs = new[] { ShortcutKey(0x5B, true), ShortcutKey(0xA2, true) };
+            if (SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT))) != 2) return false;
+            VoiceKeysHeld = false;
+            return true;
+        }
+        internal static bool WindowsVoice()
+        {
+            if (ModifiersDown()) return false;
+            var inputs = new[] { ShortcutKey(0x5B, false), ShortcutKey(0x48, false), ShortcutKey(0x48, true), ShortcutKey(0x5B, true) };
+            if (SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT))) == 4) return true;
+            var release = new[] { ShortcutKey(0x48, true), ShortcutKey(0x5B, true) };
+            SendInput(2, release, Marshal.SizeOf(typeof(INPUT)));
+            return false;
         }
     }
 
@@ -197,7 +244,7 @@ namespace MiniKeys
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var rectangle = new Rectangle(1, 1, Width - 3, Height - 3);
             using (var path = Rounded(rectangle, Toolbar ? 5 : 9))
-            using (var fill = new SolidBrush(pressed ? Color.FromArgb(199, 217, 255) : hovered ? Color.FromArgb(226, 235, 252) : Toolbar ? Color.FromArgb(245, 247, 251) : Color.White))
+            using (var fill = new SolidBrush(Icon == "microphone" && Highlight ? Color.FromArgb(255, 228, 232) : pressed ? Color.FromArgb(199, 217, 255) : hovered ? Color.FromArgb(226, 235, 252) : Toolbar ? Color.FromArgb(245, 247, 251) : Color.White))
             using (var border = new Pen(Toolbar ? Color.FromArgb(245, 247, 251) : Color.FromArgb(220, 225, 233)))
             {
                 e.Graphics.FillPath(fill, path); e.Graphics.DrawPath(border, path);
@@ -209,13 +256,21 @@ namespace MiniKeys
         }
         private void DrawIcon(Graphics graphics)
         {
-            Color color = Highlight ? Color.FromArgb(39, 95, 202) : Color.FromArgb(79, 90, 108);
+            Color color = Highlight ? (Icon == "microphone" ? Color.FromArgb(202, 49, 69) : Color.FromArgb(39, 95, 202)) : Color.FromArgb(79, 90, 108);
             using (var pen = new Pen(color, 1.5f))
             {
                 pen.StartCap = pen.EndCap = LineCap.Round;
                 var state = graphics.Save();
                 graphics.TranslateTransform(Width / 2f, Height / 2f);
-                if (Icon == "pin")
+                if (Icon == "microphone")
+                {
+                    graphics.DrawArc(pen, -3, -7, 6, 6, 180, 180);
+                    graphics.DrawLine(pen, -3, -4, -3, 0); graphics.DrawLine(pen, 3, -4, 3, 0);
+                    graphics.DrawArc(pen, -3, -3, 6, 6, 0, 180);
+                    graphics.DrawArc(pen, -6, -5, 12, 11, 0, 180);
+                    graphics.DrawLine(pen, 0, 6, 0, 8); graphics.DrawLine(pen, -3, 8, 3, 8);
+                }
+                else if (Icon == "pin")
                 {
                     if (!Highlight) graphics.RotateTransform(35);
                     graphics.DrawLine(pen, -3, -6, 3, -6);
@@ -225,12 +280,16 @@ namespace MiniKeys
                 }
                 else if (Icon == "settings")
                 {
-                    graphics.DrawEllipse(pen, -4, -4, 8, 8); graphics.DrawEllipse(pen, -1, -1, 2, 2);
-                    for (int angle = 0; angle < 360; angle += 45)
+                    var teeth = new PointF[32];
+                    for (int i = 0; i < teeth.Length; i++)
                     {
-                        double radians = angle * Math.PI / 180;
-                        graphics.DrawLine(pen, (float)(Math.Cos(radians) * 5), (float)(Math.Sin(radians) * 5), (float)(Math.Cos(radians) * 7), (float)(Math.Sin(radians) * 7));
+                        double angle = -Math.PI / 2 + i * Math.PI / 16;
+                        float radius = i % 4 == 0 || i % 4 == 3 ? 5.2f : 7.0f;
+                        teeth[i] = new PointF((float)Math.Cos(angle) * radius, (float)Math.Sin(angle) * radius);
                     }
+                    pen.LineJoin = LineJoin.Round;
+                    graphics.DrawPolygon(pen, teeth);
+                    graphics.DrawEllipse(pen, -2.4f, -2.4f, 4.8f, 4.8f);
                 }
                 else if (Icon == "minimize") graphics.DrawLine(pen, -5, 2, 5, 2);
                 else if (Icon == "close") { graphics.DrawLine(pen, -4, -4, 4, 4); graphics.DrawLine(pen, -4, 4, 4, -4); }
@@ -254,25 +313,26 @@ namespace MiniKeys
         private readonly ToolTip hints = new ToolTip();
         private readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 500 };
         private readonly System.Windows.Forms.Timer fadeTimer = new System.Windows.Forms.Timer { Interval = 50 };
-        private Tile pin, configure, minimize, close;
+        private Tile voice, pin, configure, minimize, close;
         private bool ready;
         private bool layingOut, interacting, dialogOpen;
         private DateTime lastActivity = DateTime.UtcNow;
 
         internal KeyboardWindow()
         {
+            Ui.Language = settings.Language;
             Text = Ui.Text("迷你补键盘", "MiniKeys"); BackColor = Color.FromArgb(245, 247, 251);
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = true;
             AutoScaleMode = AutoScaleMode.None; StartPosition = FormStartPosition.Manual;
             DoubleBuffered = true; TopMost = settings.Pinned;
+            voice = new Tile("", true, ToggleVoice) { Icon = "microphone", AccessibleName = "Voice input" };
             pin = new Tile("", true, TogglePin) { Icon = "pin", Highlight = settings.Pinned, AccessibleName = "Pin" };
             configure = new Tile("", true, Configure) { Icon = "settings", AccessibleName = "Settings" };
-            minimize = new Tile("", true, delegate { TouchActivity(); WindowState = FormWindowState.Minimized; }) { Icon = "minimize", AccessibleName = "Minimize" };
+            minimize = new Tile("", true, delegate { if (StopVoice()) { TouchActivity(); WindowState = FormWindowState.Minimized; } }) { Icon = "minimize", AccessibleName = "Minimize" };
             close = new Tile("", true, Close) { Icon = "close", AccessibleName = "Close" };
-            Controls.AddRange(new Control[] { pin, configure, minimize, close });
-            foreach (var tool in new[] { pin, configure, minimize, close }) tool.MouseEnter += delegate { TouchActivity(); };
-            UpdatePinHint(); hints.SetToolTip(configure, Ui.Text("自定义按键和排列", "Customize keys and layout"));
-            hints.SetToolTip(minimize, Ui.Text("最小化到任务栏", "Minimize to taskbar")); hints.SetToolTip(close, Ui.Text("退出迷你补键盘", "Exit MiniKeys"));
+            Controls.AddRange(new Control[] { voice, pin, configure, minimize, close });
+            foreach (var tool in new[] { voice, pin, configure, minimize, close }) tool.MouseEnter += delegate { TouchActivity(); };
+            ApplyLanguage();
             RebuildKeys();
             Size = new Size(Math.Max(MinimumSize.Width, Math.Min(1600, settings.Width)), Math.Max(MinimumSize.Height, Math.Min(1000, settings.Height)));
             var area = Screen.PrimaryScreen.WorkingArea;
@@ -286,7 +346,7 @@ namespace MiniKeys
             MouseDown += delegate(object sender, MouseEventArgs e)
             {
                 TouchActivity();
-                if (e.Button == MouseButtons.Left) { Native.ReleaseCapture(); Native.SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); }
+                if (e.Button == MouseButtons.Left && StopVoice()) { Native.ReleaseCapture(); Native.SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); }
             };
             ready = true;
         }
@@ -318,6 +378,7 @@ namespace MiniKeys
                 var tile = new Tile(spec.Name, false, delegate
                 {
                     TouchActivity();
+                    if (!StopVoice()) return;
                     if (!Native.SendKey(captured)) MessageBox.Show(Ui.Text("未能发送按键。请先点击目标输入框。若目标程序以管理员身份运行，也需要以管理员身份运行补键盘。", "Could not send the key. Click the target text field first. If the target runs as administrator, run MiniKeys with the same privileges."), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 });
                 tile.MouseEnter += delegate { TouchActivity(); };
@@ -335,13 +396,13 @@ namespace MiniKeys
             {
             int cols = Math.Min(settings.Columns, keys.Count), rows = (keys.Count + cols - 1) / cols;
             int minWidth = Math.Max(40, 12 + cols * 28);
-            int toolCols = Math.Min(4, Math.Max(1, (Math.Max(ClientSize.Width, minWidth) - 12) / 22));
-            int toolRows = (4 + toolCols - 1) / toolCols;
+            var tools = new[] { voice, pin, configure, minimize, close };
+            int toolCols = Math.Min(tools.Length, Math.Max(1, (Math.Max(ClientSize.Width, minWidth) - 12) / 22));
+            int toolRows = (tools.Length + toolCols - 1) / toolCols;
             int keyTop = 12 + toolRows * 22 + 4;
             MinimumSize = new Size(minWidth, keyTop + rows * 28 + 6);
-            var tools = new[] { pin, configure, minimize, close };
-            int toolLeft = Math.Max(6, ClientSize.Width - 6 - toolCols * 22);
-            for (int i = 0; i < tools.Length; i++) tools[i].SetBounds(toolLeft + i % toolCols * 22, 12 + i / toolCols * 22, 20, 20);
+            int toolLeft = toolRows == 1 ? Math.Max(6, ClientSize.Width - 6 - toolCols * 22) : 6;
+            for (int i = 0; i < tools.Length; i++) tools[i].SetBounds(i == 0 ? 6 : toolLeft + i % toolCols * 22, 12 + i / toolCols * 22, 20, 20);
             int availableWidth = ClientSize.Width - 12, availableHeight = ClientSize.Height - keyTop - 6;
             for (int i = 0; i < keys.Count; i++)
             {
@@ -365,26 +426,61 @@ namespace MiniKeys
             }
         }
         private void UpdatePinHint() { hints.SetToolTip(pin, TopMost ? Ui.Text("已置顶，点击取消", "Pinned: click to unpin") : Ui.Text("点击置顶", "Click to pin on top")); }
-        private void TogglePin() { TouchActivity(); settings.Pinned = TopMost = !TopMost; pin.Highlight = TopMost; pin.Invalidate(); UpdatePinHint(); Save(); }
+        private void ApplyLanguage()
+        {
+            Ui.Language = settings.Language;
+            Text = Ui.Text("迷你补键盘", "MiniKeys");
+            UpdateVoiceHint(); UpdatePinHint();
+            hints.SetToolTip(configure, Ui.Text("自定义按键和排列", "Customize keys and layout"));
+            hints.SetToolTip(minimize, Ui.Text("最小化到任务栏", "Minimize to taskbar"));
+            hints.SetToolTip(close, Ui.Text("退出迷你补键盘", "Exit MiniKeys"));
+        }
+        private void TogglePin() { if (!StopVoice()) return; TouchActivity(); settings.Pinned = TopMost = !TopMost; pin.Highlight = TopMost; pin.Invalidate(); UpdatePinHint(); Save(); }
+        private void UpdateVoiceHint()
+        {
+            voice.Highlight = Native.VoiceKeysHeld;
+            hints.SetToolTip(voice, settings.VoiceInput == "wechat"
+                ? Native.VoiceKeysHeld ? Ui.Text("微信语音：Ctrl + Win 已按住，再点一次释放", "WeChat: Ctrl + Win held; click again to release") : Ui.Text("微信语音：点击保持 Ctrl + Win，再点结束", "WeChat: click to hold Ctrl + Win; click again to stop")
+                : Ui.Text("Windows 语音输入：发送 Win + H，由系统控制开始/停止", "Windows voice typing: send Win + H; Windows controls listening"));
+            voice.Invalidate();
+        }
+        private void ToggleVoice()
+        {
+            TouchActivity();
+            bool sent = settings.VoiceInput == "wechat" ? (Native.VoiceKeysHeld ? Native.ReleaseVoiceKeys() : Native.HoldVoiceKeys()) : Native.WindowsVoice();
+            UpdateVoiceHint();
+            if (!sent && Native.VoiceKeysHeld) { hints.SetToolTip(voice, Ui.Text("快捷键未能释放，请再点一次麦克风重试", "Shortcut release failed; click the microphone again to retry")); return; }
+            if (!sent) MessageBox.Show(Ui.Text("未能发送语音快捷键。请先松开实体 Ctrl / Win / Shift / Alt，并点击目标输入框；如目标程序以管理员身份运行，补键盘也需以相同权限运行。", "Could not send the voice shortcut. Release physical Ctrl / Win / Shift / Alt keys and click the target text field. Match the target application's administrator privileges if needed."), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        private bool StopVoice()
+        {
+            bool released = Native.ReleaseVoiceKeys();
+            UpdateVoiceHint();
+            return released;
+        }
         internal void TouchActivity() { lastActivity = DateTime.UtcNow; if (Opacity != 1) Opacity = 1; }
         internal void UpdateFade(DateTime now)
         {
-            if (!settings.FadeEnabled || WindowState != FormWindowState.Normal || interacting || dialogOpen || Bounds.Contains(Cursor.Position))
+            if (!settings.FadeEnabled || Native.VoiceKeysHeld || WindowState != FormWindowState.Normal || interacting || dialogOpen || Bounds.Contains(Cursor.Position))
             {
                 lastActivity = now; if (Opacity != 1) Opacity = 1; return;
             }
-            if ((now - lastActivity).TotalSeconds >= 4) Opacity = Math.Max(0.65, Opacity - 0.05);
+            if ((now - lastActivity).TotalSeconds >= 4) Opacity = Math.Max(settings.FadeOpacityPercent / 100.0, Opacity - 0.05);
         }
         private void Configure()
         {
+            if (!StopVoice()) return;
             TouchActivity(); dialogOpen = true;
             try
             {
-            using (var dialog = new SettingsDialog(settings.Keys, settings.Columns, settings.FadeEnabled))
+            using (var dialog = new SettingsDialog(settings))
             {
                 dialog.TopMost = true;
                 if (dialog.ShowDialog() != DialogResult.OK) return;
                 settings.Keys = dialog.KeyText; settings.Columns = dialog.Columns; settings.FadeEnabled = dialog.FadeEnabled;
+                settings.FadeOpacityPercent = dialog.FadeOpacityPercent; settings.VoiceInput = dialog.VoiceInput;
+                settings.Language = dialog.Language;
+                ApplyLanguage();
                 RebuildKeys();
                 if (!Save()) MessageBox.Show(Ui.Text("设置已应用，但无法保存到：\n", "Settings applied, but could not save to:\n") + Settings.FilePath, Text);
             }
@@ -398,10 +494,12 @@ namespace MiniKeys
             return settings.Save();
         }
         protected override void OnLocationChanged(EventArgs e) { base.OnLocationChanged(e); ScheduleSave(); }
-        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); ScheduleSave(); }
+        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); if (ready && WindowState == FormWindowState.Minimized) StopVoice(); ScheduleSave(); }
         private void ScheduleSave() { if (ready) { saveTimer.Stop(); saveTimer.Start(); } }
-        protected override void OnResizeBegin(EventArgs e) { interacting = true; TouchActivity(); base.OnResizeBegin(e); }
+        protected override void OnResizeBegin(EventArgs e) { StopVoice(); interacting = true; TouchActivity(); base.OnResizeBegin(e); }
         protected override void OnResizeEnd(EventArgs e) { interacting = false; TouchActivity(); base.OnResizeEnd(e); }
+        protected override void OnFormClosing(FormClosingEventArgs e) { if (!StopVoice()) e.Cancel = true; base.OnFormClosing(e); }
+        protected override void OnHandleDestroyed(EventArgs e) { Native.ReleaseVoiceKeys(); base.OnHandleDestroyed(e); }
         protected override void OnFormClosed(FormClosedEventArgs e) { Save(); saveTimer.Dispose(); fadeTimer.Dispose(); hints.Dispose(); base.OnFormClosed(e); }
     }
 
@@ -410,30 +508,45 @@ namespace MiniKeys
         private readonly TextBox keyText = new TextBox();
         private readonly NumericUpDown columns = new NumericUpDown { Minimum = 1, Maximum = 12 };
         private readonly CheckBox fade = new CheckBox { AutoSize = true };
+        private readonly NumericUpDown fadeOpacity = new NumericUpDown { Minimum = 20, Maximum = 100 };
+        private readonly ComboBox voiceInput = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        private readonly ComboBox language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         internal string KeyText { get { return keyText.Text.Trim(); } }
         internal int Columns { get { return (int)columns.Value; } }
         internal bool FadeEnabled { get { return fade.Checked; } }
-        internal SettingsDialog(string keys, int count, bool fadeEnabled)
+        internal int FadeOpacityPercent { get { return (int)fadeOpacity.Value; } }
+        internal string VoiceInput { get { return voiceInput.SelectedIndex == 1 ? "windows" : "wechat"; } }
+        internal string Language { get { return language.SelectedIndex == 1 ? "en" : "zh"; } }
+        internal SettingsDialog(Settings settings)
         {
             Text = Ui.Text("自定义补键", "MiniKeys settings"); Font = new Font("Microsoft YaHei UI", 9);
-            ClientSize = new Size(430, 302); FormBorderStyle = FormBorderStyle.FixedDialog;
+            ClientSize = new Size(430, 420); FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = MinimizeBox = false; StartPosition = FormStartPosition.CenterScreen;
             Controls.Add(new Label { Text = Ui.Text("要显示的按键（用空格分隔，可调整顺序）", "Keys to display (separated by spaces, in order)"), AutoSize = true, Location = new Point(18, 18) });
-            keyText.Text = keys; keyText.SetBounds(20, 46, 388, 28); Controls.Add(keyText);
+            keyText.Text = settings.Keys; keyText.SetBounds(20, 46, 388, 28); Controls.Add(keyText);
             Controls.Add(new Label { Text = Ui.Text("支持 A–Z、0–9、F1–F12、标点，以及：\n", "A–Z, 0–9, F1–F12, punctuation, and:\n") + "Space  Enter  Backspace  Tab  Esc  Delete\nLeft  Right  Up  Down  Home  End  PageUp  PageDown", AutoSize = true, Location = new Point(18, 86) });
             Controls.Add(new Label { Text = Ui.Text("每行按键数", "Keys per row"), AutoSize = true, Location = new Point(18, 166) });
-            columns.Value = count; columns.SetBounds(112, 162, 70, 26); Controls.Add(columns);
+            columns.Value = settings.Columns; columns.SetBounds(112, 162, 70, 26); Controls.Add(columns);
             Controls.Add(new Label { Text = Ui.Text("1 = 竖排；4 = 四键横排", "1 = vertical; 4 = horizontal"), AutoSize = true, Location = new Point(194, 166) });
-            fade.Text = Ui.Text("闲置 4 秒后淡化至 65%，鼠标回来恢复", "Fade to 65% after 4s away; restore on hover"); fade.Checked = fadeEnabled; fade.Location = new Point(20, 206); Controls.Add(fade);
-            var reset = new Button { Text = Ui.Text("恢复 3 E D C", "Reset 3 E D C"), Location = new Point(20, 254), Size = new Size(116, 30) };
-            reset.Click += delegate { keyText.Text = "3 E D C"; columns.Value = 4; };
-            var ok = new Button { Text = Ui.Text("保存", "Save"), Location = new Point(244, 254), Size = new Size(78, 30) };
+            Controls.Add(new Label { Text = Ui.Text("语音输入", "Voice input"), AutoSize = true, Location = new Point(18, 206) });
+            voiceInput.Items.AddRange(new object[] { Ui.Text("微信语音输入 (Ctrl + Win)", "WeChat voice typing (Ctrl + Win)"), Ui.Text("Windows / 微软语音输入 (Win + H)", "Windows / Microsoft voice (Win + H)") });
+            voiceInput.SelectedIndex = settings.VoiceInput == "windows" ? 1 : 0; voiceInput.SetBounds(112, 202, 296, 28); Controls.Add(voiceInput);
+            Controls.Add(new Label { Text = Ui.Text("界面语言", "Language"), AutoSize = true, Location = new Point(18, 244) });
+            language.Items.AddRange(new object[] { "简体中文 / Chinese", "English" }); language.SelectedIndex = settings.Language == "en" ? 1 : 0; language.SetBounds(112, 240, 296, 28); Controls.Add(language);
+            fade.Text = Ui.Text("闲置 4 秒后淡化，鼠标回来恢复", "Fade after 4s away; restore on hover"); fade.Checked = settings.FadeEnabled; fade.Location = new Point(20, 286); Controls.Add(fade);
+            Controls.Add(new Label { Text = Ui.Text("淡化后不透明度", "Idle opacity"), AutoSize = true, Location = new Point(18, 326) });
+            fadeOpacity.Value = Math.Max(20, Math.Min(100, settings.FadeOpacityPercent)); fadeOpacity.Enabled = fade.Checked; fadeOpacity.SetBounds(152, 322, 70, 26); Controls.Add(fadeOpacity);
+            Controls.Add(new Label { Text = Ui.Text("%（数值越大越清楚）", "% (higher = clearer)"), AutoSize = true, Location = new Point(234, 326) });
+            fade.CheckedChanged += delegate { fadeOpacity.Enabled = fade.Checked; };
+            var reset = new Button { Text = Ui.Text("恢复 3 E D C", "Reset 3 E D C"), Location = new Point(20, 372), Size = new Size(116, 30) };
+            reset.Click += delegate { keyText.Text = "3 E D C"; columns.Value = 1; };
+            var ok = new Button { Text = Ui.Text("保存", "Save"), Location = new Point(244, 372), Size = new Size(78, 30) };
             ok.Click += delegate
             {
                 try { KeyMap.Parse(KeyText); DialogResult = DialogResult.OK; }
                 catch (ArgumentException error) { MessageBox.Show(this, error.Message, Ui.Text("检查按键", "Check key names"), MessageBoxButtons.OK, MessageBoxIcon.Information); }
             };
-            var cancel = new Button { Text = Ui.Text("取消", "Cancel"), DialogResult = DialogResult.Cancel, Location = new Point(330, 254), Size = new Size(78, 30) };
+            var cancel = new Button { Text = Ui.Text("取消", "Cancel"), DialogResult = DialogResult.Cancel, Location = new Point(330, 372), Size = new Size(78, 30) };
             Controls.AddRange(new Control[] { reset, ok, cancel }); AcceptButton = ok; CancelButton = cancel;
         }
     }

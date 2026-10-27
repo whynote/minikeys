@@ -83,18 +83,32 @@ internal static class MiniKeysTests
             Check(rejected, "invalid key setting rejected: " + (invalid == "" ? "empty" : invalid));
         }
         var settings = Activator.CreateInstance(Type("Settings"), true);
+        Check((int)Get(settings, "Columns") == 1 && (int)Get(settings, "Width") == 60 && (int)Get(settings, "Height") == 244, "new settings use the compact vertical layout");
+        Check((string)Get(settings, "Language") == "zh" && (string)Get(settings, "VoiceInput") == "wechat", "new settings default to Chinese UI and WeChat voice input");
+        Check((bool)Get(settings, "FadeEnabled") && (int)Get(settings, "FadeOpacityPercent") == 30, "new settings enable idle fading at 30 percent opacity");
         Set(settings, "Keys", "E 3 Backspace"); Set(settings, "Columns", 2);
         Set(settings, "X", 173); Set(settings, "Y", 241); Set(settings, "Width", 347); Set(settings, "Height", 183); Set(settings, "Pinned", false);
-        Set(settings, "FadeEnabled", false);
+        Set(settings, "FadeEnabled", false); Set(settings, "FadeOpacityPercent", 70);
+        Set(settings, "VoiceInput", "windows"); Set(settings, "Language", "en");
         Check((bool)Call(Type("Settings"), settings, "Save"), "save to isolated configuration path");
         var loaded = Call(Type("Settings"), null, "Load");
-        Check(new[] { "Keys", "Columns", "X", "Y", "Width", "Height", "Pinned", "FadeEnabled" }.All(n => Object.Equals(Get(settings, n), Get(loaded, n))), "keys, layout, bounds, pin and fade settings persist");
+        Check(new[] { "Keys", "Columns", "X", "Y", "Width", "Height", "Pinned", "FadeEnabled", "FadeOpacityPercent", "VoiceInput", "Language" }.All(n => Object.Equals(Get(settings, n), Get(loaded, n))), "keys, layout, bounds, pin, fade, voice mode and UI language persist");
         File.WriteAllText((string)settingsPath.GetValue(null), "{\"Keys\":\"3 E D C\",\"Columns\":1,\"X\":173,\"Y\":241,\"Width\":196,\"Height\":158,\"Pinned\":true}");
         loaded = Call(Type("Settings"), null, "Load");
-        Check((bool)Get(loaded, "FadeEnabled") && (int)Get(loaded, "Columns") == 1, "v1 configuration enables the new fade default without changing layout");
+        Check((bool)Get(loaded, "FadeEnabled") && (int)Get(loaded, "FadeOpacityPercent") == 30 && (string)Get(loaded, "Language") == "zh" && (string)Get(loaded, "VoiceInput") == "wechat", "v1 configuration receives defaults for missing fade, voice and language fields");
+        Check((int)Get(loaded, "Columns") == 1 && (int)Get(loaded, "Width") == 196 && (int)Get(loaded, "Height") == 158, "v1 configuration keeps its existing layout and bounds");
+        File.WriteAllText((string)settingsPath.GetValue(null), "{\"Keys\":\"3 E D C\",\"Columns\":4,\"Width\":284,\"Height\":104,\"FadeEnabled\":false,\"FadeOpacityPercent\":65,\"VoiceInput\":\"windows\"}");
+        loaded = Call(Type("Settings"), null, "Load");
+        Check(!(bool)Get(loaded, "FadeEnabled") && (int)Get(loaded, "FadeOpacityPercent") == 65 && (string)Get(loaded, "VoiceInput") == "windows" && (int)Get(loaded, "Columns") == 4, "upgrade preserves existing fade, voice and horizontal layout choices");
+        foreach (int opacity in new[] { -5, 120 })
+        {
+            File.WriteAllText((string)settingsPath.GetValue(null), "{\"Keys\":\"3 E D C\",\"FadeOpacityPercent\":" + opacity + ",\"Language\":\"unknown\",\"VoiceInput\":\"unknown\"}");
+            loaded = Call(Type("Settings"), null, "Load");
+            Check((int)Get(loaded, "FadeOpacityPercent") == Math.Max(20, Math.Min(100, opacity)) && (string)Get(loaded, "Language") == "zh" && (string)Get(loaded, "VoiceInput") == "wechat", "invalid language and voice settings fall back while opacity is clamped: " + opacity);
+        }
         File.WriteAllText((string)settingsPath.GetValue(null), "{invalid json");
         loaded = Call(Type("Settings"), null, "Load");
-        Check((string)Get(loaded, "Keys") == "3 E D C" && (int)Get(loaded, "Columns") == 4, "corrupt configuration restores defaults");
+        Check((string)Get(loaded, "Keys") == "3 E D C" && (int)Get(loaded, "Columns") == 1 && (string)Get(loaded, "Language") == "zh", "corrupt configuration restores defaults");
         File.WriteAllText((string)settingsPath.GetValue(null), "null");
         loaded = Call(Type("Settings"), null, "Load");
         Check((string)Get(loaded, "Keys") == "3 E D C", "null configuration restores defaults");
@@ -141,24 +155,36 @@ internal static class MiniKeysTests
         try
         {
             Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
-            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "English", "non-Chinese UI culture uses English");
+            Type("Ui").GetField("Language", Members).SetValue(null, "zh");
+            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "中文", "Chinese UI selection is independent of Windows UI culture");
             Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
-            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "中文", "Chinese UI culture uses Chinese");
+            Type("Ui").GetField("Language", Members).SetValue(null, "en");
+            Check((string)Call(Type("Ui"), null, "Text", "中文", "English") == "English", "English UI selection is independent of Windows UI culture");
             using (var keyboard = (Form)Activator.CreateInstance(Type("KeyboardWindow"), true))
             {
                 // Creating handles and bitmaps does not show or activate this window.
                 IntPtr handle = keyboard.Handle;
-                var tools = new[] { "pin", "configure", "minimize", "close" }.Select(n => (Control)Get(keyboard, n)).ToArray();
-                Check(tools.Select(c => (string)Get(c, "Icon")).SequenceEqual(new[] { "pin", "settings", "minimize", "close" }), "toolbar exposes four stable icon controls");
+                var tools = new[] { "voice", "pin", "configure", "minimize", "close" }.Select(n => (Control)Get(keyboard, n)).ToArray();
+                Check(tools.Select(c => (string)Get(c, "Icon")).SequenceEqual(new[] { "microphone", "pin", "settings", "minimize", "close" }), "toolbar exposes microphone, pin, settings, minimize and close icons in order");
                 Check(tools.All(c => !String.IsNullOrEmpty(c.AccessibleName) && !c.TabStop), "icon controls have accessible labels and do not take keyboard focus");
                 Check((Native.GetWindowLong(handle, -20) & 0x08000000) != 0 && keyboard.ShowInTaskbar, "hidden window retains no-activate behavior and a taskbar entry");
-                CheckLayout(keyboard, "default horizontal layout");
-                Preview(keyboard, "v1.1.0.png");
+                Check(keyboard.Text == "迷你补键盘", "keyboard loads the default Chinese UI selection");
+                CheckLayout(keyboard, "default vertical layout");
+                Preview(keyboard, "v1.2.0.png");
 
                 object settings = Get(keyboard, "settings");
+                var hints = (ToolTip)Get(keyboard, "hints");
+                foreach (string language in new[] { "en", "zh" })
+                {
+                    Set(settings, "Language", language);
+                    Call(Type("KeyboardWindow"), keyboard, "ApplyLanguage");
+                    Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
+                    Check(keyboard.Text == (language == "en" ? "MiniKeys" : "迷你补键盘") && hints.GetToolTip(tools[2]) == (language == "en" ? "Customize keys and layout" : "自定义按键和排列"), "language changes refresh the caption and settings tooltip immediately: " + language);
+                    Check(hints.GetToolTip(tools[0]).StartsWith(language == "en" ? "WeChat:" : "微信语音：") && hints.GetToolTip(KeyTiles(keyboard)[0]).StartsWith(language == "en" ? "Send " : "发送 "), "language changes refresh voice and key tooltips without activating voice: " + language);
+                }
                 Set(settings, "Columns", 1);
                 Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
-                foreach (int width in new[] { 40, 55, 56, 77, 78, 99, 100, 196, 284 })
+                foreach (int width in new[] { 40, 55, 56, 77, 78, 99, 100, 121, 122, 196, 284 })
                 {
                     keyboard.Width = width;
                     keyboard.Height = keyboard.MinimumSize.Height;
@@ -167,7 +193,7 @@ internal static class MiniKeysTests
                 keyboard.Width = keyboard.MinimumSize.Width;
                 keyboard.Height = keyboard.MinimumSize.Height;
                 Check(keyboard.Width <= 44, "four-key vertical layout can be narrowed to at most 44 pixels");
-                Preview(keyboard, "v1.1.0-vertical.png");
+                Preview(keyboard, "v1.2.0-vertical.png");
 
                 Set(settings, "Columns", 4);
                 Call(Type("KeyboardWindow"), keyboard, "RebuildKeys");
@@ -189,13 +215,21 @@ internal static class MiniKeysTests
                 keyboard.Location = new Point(-16000, -16000);
                 DateTime now = DateTime.UtcNow;
                 Set(settings, "FadeEnabled", true);
+                Set(settings, "FadeOpacityPercent", 30);
                 Set(keyboard, "lastActivity", now);
                 Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(3.9));
                 Check(keyboard.Opacity == 1, "fade waits for four seconds of inactivity");
                 Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4));
-                Check(keyboard.Opacity > 0.65 && keyboard.Opacity < 1, "fade begins gradually instead of jumping to the target");
+                Check(keyboard.Opacity > 0.30 && keyboard.Opacity < 1, "fade begins gradually instead of jumping to the target");
                 for (int i = 1; i <= 20; i++) Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4 + i * 0.05));
-                Check(Math.Abs(keyboard.Opacity - 0.65) < 0.005, "fade stops at a visible 65 percent opacity");
+                Check(Math.Abs(keyboard.Opacity - 0.30) < 0.005, "fade stops at the default 30 percent opacity");
+                foreach (int opacity in new[] { 20, 65, 70, 100 })
+                {
+                    Set(settings, "FadeOpacityPercent", opacity); keyboard.Opacity = 1;
+                    Set(keyboard, "lastActivity", now);
+                    for (int i = 0; i <= 20; i++) Call(Type("KeyboardWindow"), keyboard, "UpdateFade", now.AddSeconds(4 + i * 0.05));
+                    Check(Math.Abs(keyboard.Opacity - opacity / 100.0) < 0.005, "fade honors configured opacity: " + opacity + " percent");
+                }
                 Call(Type("KeyboardWindow"), keyboard, "TouchActivity");
                 Check(keyboard.Opacity == 1, "activity immediately restores full opacity");
                 keyboard.Location = new Point(Cursor.Position.X - 10, Cursor.Position.Y - 10);
@@ -233,8 +267,35 @@ internal static class MiniKeysTests
                 keyboard.Close();
             }
             File.Delete((string)settingsPath.GetValue(null));
+            SettingsDialogTests();
         }
-        finally { Thread.CurrentThread.CurrentUICulture = originalCulture; }
+        finally
+        {
+            Thread.CurrentThread.CurrentUICulture = originalCulture;
+            Type("Ui").GetField("Language", Members).SetValue(null, "zh");
+        }
+    }
+
+    private static void SettingsDialogTests()
+    {
+        foreach (string language in new[] { "zh", "en" })
+        {
+            object settings = Activator.CreateInstance(Type("Settings"), true);
+            Set(settings, "Language", language);
+            Type("Ui").GetField("Language", Members).SetValue(null, language);
+            using (var dialog = (Form)Activator.CreateInstance(Type("SettingsDialog"), Members, null, new[] { settings }, CultureInfo.InvariantCulture))
+            {
+                IntPtr handle = dialog.Handle;
+                Check(dialog.Text == (language == "zh" ? "自定义补键" : "MiniKeys settings"), "settings dialog uses the selected UI language: " + language);
+                Check((string)Type("SettingsDialog").GetProperty("Language", Members).GetValue(dialog, null) == language, "settings language selector starts from the saved choice: " + language);
+                Check((string)Type("SettingsDialog").GetProperty("VoiceInput", Members).GetValue(dialog, null) == "wechat", "settings default to WeChat voice input: " + language);
+                Check((bool)Type("SettingsDialog").GetProperty("FadeEnabled", Members).GetValue(dialog, null) && (int)Type("SettingsDialog").GetProperty("FadeOpacityPercent", Members).GetValue(dialog, null) == 30, "settings show enabled fading at 30 percent opacity: " + language);
+                Check(dialog.Controls.Cast<Control>().All(c => dialog.ClientRectangle.Contains(c.Bounds)), "settings controls fit inside the dialog: " + language);
+                ((ComboBox)Get(dialog, "language")).SelectedIndex = language == "en" ? 0 : 1;
+                Check((string)Type("SettingsDialog").GetProperty("Language", Members).GetValue(dialog, null) == (language == "en" ? "zh" : "en") && (string)Get(settings, "Language") == language && (string)Type("Ui").GetField("Language", Members).GetValue(null) == language, "language dropdown changes are staged until settings are saved: " + language);
+                Check(!dialog.Visible, "settings component never displays its window: " + language);
+            }
+        }
     }
 
     private sealed class InputHost : Form
@@ -265,7 +326,7 @@ internal static class MiniKeysTests
                 keyboard = (Form)Activator.CreateInstance(Type("KeyboardWindow"), true);
                 keyboard.Location = new Point(Left, Bottom + 25);
                 keyboard.Show();
-                keyTiles = keyboard.Controls.Cast<Control>().Where(c => new[] { "3", "E", "D", "C" }.Contains(c.Text)).OrderBy(c => c.Left).ToArray();
+                keyTiles = keyboard.Controls.Cast<Control>().Where(c => new[] { "3", "E", "D", "C" }.Contains(c.Text)).OrderBy(c => c.Top).ThenBy(c => c.Left).ToArray();
                 Activate(); editor.Focus();
                 Native.SetForegroundWindow(Handle);
                 timer.Start();
@@ -336,7 +397,7 @@ internal static class MiniKeysTests
                 {
                     Check(keyboard.Width > beforeDrag.Width + 10 && keyboard.Height > beforeDrag.Height + 10, "native mouse drag resizes the bottom-right border");
                     beforeDrag = keyboard.Bounds;
-                    Native.Drag(new Point(keyboard.Left + 45, keyboard.Top + 17), 40, 25);
+                    Native.Drag(new Point(keyboard.Left + keyboard.Width / 2, keyboard.Top + 7), 40, 25);
                 }
                 else if (step == 18)
                 {
